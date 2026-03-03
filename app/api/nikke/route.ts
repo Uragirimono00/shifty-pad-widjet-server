@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import puppeteer, { Browser, Page } from "puppeteer-core";
-import chromium from "@sparticuz/chromium";
+import chromium from "@sparticuz/chromium-min";
 
 export const maxDuration = 60;
 
@@ -24,7 +24,9 @@ async function getBrowser(): Promise<Browser> {
   return puppeteer.launch({
     args: chromium.args,
     defaultViewport: { width: 390, height: 844 },
-    executablePath: await chromium.executablePath(),
+    executablePath: await chromium.executablePath(
+      "https://github.com/nichochar/chromium-binaries/raw/refs/heads/main/chromium-v131.0.1-pack.tar"
+    ),
     headless: true,
   });
 }
