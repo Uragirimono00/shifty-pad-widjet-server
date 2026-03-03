@@ -4,11 +4,25 @@ import chromium from "@sparticuz/chromium-min";
 
 export const maxDuration = 60;
 
-// In-memory cookie cache (resets on cold start)
-let cachedCookies: Array<{ name: string; value: string; domain: string; path: string }> = [];
-let cookieExpiry = 0;
+// ===== 세션 캐시 (쿠키 + localStorage) =====
+interface CachedSession {
+  cookies: Array<{ name: string; value: string; domain: string; path: string }>;
+  localStorage: Record<string, string>;
+  expiry: number;
+}
+let cachedSession: CachedSession | null = null;
+const SESSION_TTL = 60 * 60 * 1000; // 1시간
 
-// In-memory data cache: openid → { data, expiry }
+// SPA 인증에 필요한 localStorage 키
+const ESSENTIAL_LS_KEYS = [
+  "lip-user-info",
+  "__ss_storage_ls_cache_login_meta__",
+  "logined_account_cache_key",
+  "__ss_storage_ls_cache_shiftyhint_v4__",
+  "__ss_storage_ls_cache_shiftylist_hint_v2__",
+];
+
+// ===== 데이터 캐시 (openid별) =====
 const DATA_CACHE_TTL = 10 * 60 * 1000; // 10분
 const dataCache = new Map<string, { data: unknown; expiry: number }>();
 
@@ -17,16 +31,29 @@ function encodeOpenId(openId: string): string {
   return Buffer.from(raw).toString("base64");
 }
 
+const CHROMIUM_ARGS = [
+  "--no-sandbox",
+  "--disable-setuid-sandbox",
+  "--disable-gpu",
+  "--disable-dev-shm-usage",
+  "--disable-extensions",
+  "--disable-background-networking",
+  "--disable-default-apps",
+  "--disable-sync",
+  "--no-first-run",
+  "--disable-translate",
+];
+
 async function getBrowser(): Promise<Browser> {
   if (process.env.NODE_ENV === "development") {
     return puppeteer.launch({
       executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      args: CHROMIUM_ARGS,
     });
   }
   return puppeteer.launch({
-    args: chromium.args,
+    args: [...chromium.args, ...CHROMIUM_ARGS],
     defaultViewport: { width: 390, height: 844 },
     executablePath: await chromium.executablePath(
       "https://github.com/Sparticuz/chromium/releases/download/v143.0.4/chromium-v143.0.4-pack.x64.tar"
@@ -35,81 +62,137 @@ async function getBrowser(): Promise<Browser> {
   });
 }
 
-async function dismissPopups(page: Page) {
-  // Accept cookies
-  await page.evaluate(() => {
-    const buttons = document.querySelectorAll("button");
-    for (const btn of buttons) {
-      if (btn.textContent?.includes("Accept all optional")) {
-        (btn as HTMLElement).click();
-        return;
-      }
-    }
-  });
-  await new Promise((r) => setTimeout(r, 500));
+// 불필요한 리소스 차단 (이미지, CSS, 폰트, 미디어, 분석 스크립트)
+const BLOCKED_DOMAINS = ["aegis.qq.com", "google-analytics.com", "googletagmanager.com", "facebook.net", "doubleclick.net"];
+const BLOCKED_TYPES = new Set(["image", "stylesheet", "font", "media"]);
 
-  // Dismiss note popup
+async function enableRequestBlocking(page: Page) {
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    const type = req.resourceType();
+    const url = req.url();
+    if (BLOCKED_TYPES.has(type) || BLOCKED_DOMAINS.some(d => url.includes(d))) {
+      req.abort();
+    } else {
+      req.continue();
+    }
+  });
+}
+
+// 캐싱된 세션(쿠키+localStorage) 복원
+async function restoreSession(page: Page): Promise<boolean> {
+  if (!cachedSession || Date.now() >= cachedSession.expiry) return false;
+
+  // 쿠키 설정
+  if (cachedSession.cookies.length > 0) {
+    await page.setCookie(...cachedSession.cookies.map(c => ({
+      ...c,
+      secure: true,
+      sameSite: "None" as const,
+    })));
+  }
+
+  // localStorage 설정 — 페이지 로드 전에 주입
+  const lsData = cachedSession.localStorage;
+  await page.evaluateOnNewDocument((data) => {
+    for (const [key, value] of Object.entries(data)) {
+      localStorage.setItem(key, value);
+    }
+  }, lsData);
+
+  return true;
+}
+
+// 로그인 성공 후 세션(쿠키+localStorage) 저장
+async function saveSession(page: Page) {
+  const cookies = await page.cookies();
+  const localStorage = await page.evaluate((keys) => {
+    const result: Record<string, string> = {};
+    for (const key of keys) {
+      const val = window.localStorage.getItem(key);
+      if (val) result[key] = val;
+    }
+    return result;
+  }, ESSENTIAL_LS_KEYS);
+
+  cachedSession = {
+    cookies: cookies.map(c => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path,
+    })),
+    localStorage,
+    expiry: Date.now() + SESSION_TTL,
+  };
+}
+
+async function dismissPopups(page: Page) {
   await page.evaluate(() => {
-    const els = document.querySelectorAll("a, button, div");
-    for (const el of els) {
-      if (el.textContent?.trim() === "Confirm" && el.closest("[class*='note'], [class*='popup'], [class*='modal']")) {
-        (el as HTMLElement).click();
-        return;
+    // Accept cookies + dismiss popups in one pass
+    const buttons = document.querySelectorAll("button, a, div");
+    for (const btn of buttons) {
+      const text = btn.textContent?.trim() || "";
+      if (text.includes("Accept all optional")) {
+        (btn as HTMLElement).click();
+      }
+      if (text === "Confirm" && btn.closest("[class*='note'], [class*='popup'], [class*='modal']")) {
+        (btn as HTMLElement).click();
       }
     }
   });
-  await new Promise((r) => setTimeout(r, 500));
 }
 
 async function loginWithPuppeteer(page: Page, email: string, password: string): Promise<boolean> {
-  // Navigate to login page
+  // Navigate to login page - domcontentloaded is enough, no need to wait for all resources
   await page.goto("https://www.blablalink.com/login?to=/shiftyspad/home", {
-    waitUntil: "networkidle2",
-    timeout: 20000,
+    waitUntil: "domcontentloaded",
+    timeout: 15000,
   });
-  await new Promise((r) => setTimeout(r, 3000));
 
-  // Dismiss any popups
+  // Wait for login form to appear instead of fixed 3s wait
+  try {
+    await page.waitForSelector("#loginPwdForm_account", { timeout: 8000 });
+  } catch {
+    // Form might need popup dismiss or tab switch first
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
   await dismissPopups(page);
 
-  // Select region if needed (click the region selector)
-  await page.evaluate(() => {
-    const els = document.querySelectorAll("*");
-    for (const el of els) {
-      if (el.textContent?.trim() === "JP/KR/NA/SEA/Global" && el.children.length <= 2) {
-        (el as HTMLElement).click();
-        return;
-      }
-    }
-  });
-  await new Promise((r) => setTimeout(r, 1000));
-
-  // Switch to password login tab if needed
+  // Select region + switch to password tab in one evaluate
   await page.evaluate(() => {
     const els = document.querySelectorAll("*");
     for (const el of els) {
       const text = el.textContent?.trim();
+      if (text === "JP/KR/NA/SEA/Global" && el.children.length <= 2) {
+        (el as HTMLElement).click();
+      }
       if (text === "Password login" && el.children.length === 0) {
         (el as HTMLElement).click();
-        return;
       }
     }
   });
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => setTimeout(r, 300));
 
-  // Fill email
-  const emailInput = await page.$("#loginPwdForm_account");
-  if (emailInput) {
-    await emailInput.click({ clickCount: 3 }); // Select all
-    await emailInput.type(email, { delay: 50 });
-  }
+  // Fill email & password instantly via JS (no slow typing)
+  await page.evaluate((e, p) => {
+    const emailEl = document.querySelector("#loginPwdForm_account") as HTMLInputElement;
+    const pwdEl = document.querySelector("#loginPwdForm_password") as HTMLInputElement;
 
-  // Fill password
-  const pwdInput = await page.$("#loginPwdForm_password");
-  if (pwdInput) {
-    await pwdInput.click({ clickCount: 3 });
-    await pwdInput.type(password, { delay: 50 });
-  }
+    // React/Ant Design inputs need native input event simulation
+    function setNativeValue(el: HTMLInputElement, value: string) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    if (emailEl) { emailEl.focus(); setNativeValue(emailEl, e); }
+    if (pwdEl) { pwdEl.focus(); setNativeValue(pwdEl, p); }
+  }, email, password);
+
+  await new Promise((r) => setTimeout(r, 200));
 
   // Click login button
   await page.evaluate(() => {
@@ -121,7 +204,6 @@ async function loginWithPuppeteer(page: Page, email: string, password: string): 
         return;
       }
     }
-    // Fallback: find any "Log in" button
     for (const btn of buttons) {
       if (btn.textContent?.trim() === "Log in") {
         (btn as HTMLElement).click();
@@ -130,48 +212,43 @@ async function loginWithPuppeteer(page: Page, email: string, password: string): 
     }
   });
 
-  // Wait for login to complete (redirect)
+  // Wait for redirect (login complete) instead of fixed 3s + networkidle2
   try {
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 });
+    await page.waitForFunction(() => !window.location.href.includes("/login"), { timeout: 10000 });
   } catch {
-    // Navigation might already have happened
+    // Fallback: might already be redirected
   }
 
-  await new Promise((r) => setTimeout(r, 3000));
+  await new Promise((r) => setTimeout(r, 500));
 
-  // Check if login succeeded
   const currentUrl = page.url();
-  const isLoggedIn = !currentUrl.includes("/login");
-
-  return isLoggedIn;
+  return !currentUrl.includes("/login");
 }
 
 async function scrapeUserData(page: Page, openId: string) {
   const encodedId = encodeOpenId(openId);
   const targetUrl = `https://www.blablalink.com/shiftyspad/home?uid=${encodeURIComponent(encodedId)}&openid=${encodeURIComponent(encodedId)}`;
 
-  // Set Korean language
   await page.setExtraHTTPHeaders({ "Accept-Language": "ko-KR,ko;q=0.9" });
 
-  await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 30000 });
-  await new Promise((r) => setTimeout(r, 5000));
+  await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
 
-  // Dismiss popups
-  await dismissPopups(page);
-
-  // Wait for content
+  // SPA 데이터 렌더링 대기 — 고정 5초 대신 셀렉터 감지
   try {
-    await page.waitForSelector('[data-cname="UserGameInfo"]', { timeout: 10000 });
+    await page.waitForSelector('[data-cname="UserGameInfo"], [data-cname="my-nikkes"]', { timeout: 12000 });
   } catch {
-    await new Promise((r) => setTimeout(r, 5000));
+    // fallback: 짧은 대기 후 시도
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
-  // Expand the user info section (click the expand arrow if collapsed)
+  await dismissPopups(page);
+
+  // Expand section + 짧은 대기
   await page.evaluate(() => {
     const expandBtn = document.querySelector(".expand-btn");
     if (expandBtn) (expandBtn as HTMLElement).click();
   });
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 500));
 
   return page.evaluate(() => {
     const getText = (el: Element | null): string => el?.textContent?.trim() ?? "";
@@ -406,23 +483,22 @@ export async function GET(request: NextRequest) {
     await page.setUserAgent(
       "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     );
+    await enableRequestBlocking(page);
 
-    // Set cached cookies if available
-    if (cachedCookies.length > 0 && Date.now() < cookieExpiry) {
-      await page.setCookie(...cachedCookies.map(c => ({
-        ...c,
-        secure: true,
-        sameSite: "None" as const,
-      })));
-
-      // Try to load the page directly with cached cookies
+    // 1단계: 캐싱된 세션(쿠키+localStorage)으로 바로 시도
+    const hasSession = await restoreSession(page);
+    if (hasSession) {
       const data = await scrapeUserData(page, openId);
       if (data && !("error" in data)) {
+        // 세션 유효 → 데이터 캐시 저장 후 반환
+        dataCache.set(openId, { data, expiry: Date.now() + DATA_CACHE_TTL });
         return NextResponse.json({ success: true, openId, data });
       }
+      // 세션 만료됨 → 캐시 무효화 후 로그인 진행
+      cachedSession = null;
     }
 
-    // Login required
+    // 2단계: 로그인 필요
     const loggedIn = await loginWithPuppeteer(page, email, password);
     if (!loggedIn) {
       return NextResponse.json({
@@ -432,20 +508,12 @@ export async function GET(request: NextRequest) {
       }, { status: 401 });
     }
 
-    // Cache cookies for 1 hour
-    const cookies = await page.cookies();
-    cachedCookies = cookies.map(c => ({
-      name: c.name,
-      value: c.value,
-      domain: c.domain,
-      path: c.path,
-    }));
-    cookieExpiry = Date.now() + 60 * 60 * 1000;
+    // 세션 저장 (쿠키 + localStorage)
+    await saveSession(page);
 
-    // Now scrape the data
+    // 3단계: 데이터 스크래핑
     const data = await scrapeUserData(page, openId);
 
-    // 캐시에 저장 (10분)
     if (data && !("error" in data)) {
       dataCache.set(openId, { data, expiry: Date.now() + DATA_CACHE_TTL });
     }
