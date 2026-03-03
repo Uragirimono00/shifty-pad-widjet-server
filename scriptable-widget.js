@@ -314,7 +314,7 @@ function addMissions(widget, data) {
 // ===== 유니온 레이드 섹션 =====
 function addUnionRaid(widget, data) {
   const raid = data.unionRaid;
-  if (!raid?.bosses?.length) return;
+  if (!raid) return;
 
   widget.addSpacer(4);
 
@@ -336,18 +336,27 @@ function addUnionRaid(widget, data) {
   }
 
   // Metadata row
-  if (raid.difficulty || raid.level) {
+  const metaParts = [
+    raid.difficulty || "",
+    raid.level ? `Lv.${raid.level}` : "",
+    raid.season ? raid.season.match(/\[S\d+\]/)?.[0] || "" : "",
+  ].filter(Boolean);
+
+  if (metaParts.length > 0) {
     const metaRow = widget.addStack();
     metaRow.layoutHorizontally();
-    const metaText = [
-      raid.difficulty ? `${raid.difficulty}` : "",
-      raid.level ? `Lv.${raid.level}` : "",
-      raid.season ? raid.season.match(/\[S\d+\]/)?.[0] || "" : "",
-    ].filter(Boolean).join(" | ");
-
-    const mt = metaRow.addText(metaText);
+    const mt = metaRow.addText(metaParts.join(" | "));
     mt.font = Font.systemFont(8);
     mt.textColor = new Color(COLORS.gray);
+  }
+
+  // 보스 데이터 없으면 시즌 종료 표시
+  if (!raid.bosses || raid.bosses.length === 0) {
+    widget.addSpacer(2);
+    const noData = widget.addText("레이드 시즌 종료 또는 데이터 없음");
+    noData.font = Font.systemFont(9);
+    noData.textColor = new Color(COLORS.darkGray);
+    return;
   }
 
   widget.addSpacer(2);

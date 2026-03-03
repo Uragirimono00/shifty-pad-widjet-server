@@ -23,7 +23,7 @@ const ESSENTIAL_LS_KEYS = [
 ];
 
 // ===== 데이터 캐시 (openid별) =====
-const DATA_CACHE_TTL = 10 * 60 * 1000; // 10분
+const DATA_CACHE_TTL = 1 * 60 * 1000; // 1분
 const dataCache = new Map<string, { data: unknown; expiry: number }>();
 
 function encodeOpenId(openId: string): string {
@@ -64,7 +64,7 @@ async function getBrowser(): Promise<Browser> {
 
 // 불필요한 리소스 차단 (스크래핑 시에만 활성화, 로그인 시에는 비활성화)
 const BLOCKED_DOMAINS = ["aegis.qq.com", "google-analytics.com", "googletagmanager.com", "facebook.net", "doubleclick.net"];
-const BLOCKED_TYPES = new Set(["image", "stylesheet", "font", "media"]);
+const BLOCKED_TYPES = new Set(["image", "font", "media"]);
 const pageBlocking = new WeakSet<Page>();
 
 async function setupRequestInterception(page: Page) {
@@ -489,7 +489,7 @@ export async function GET(request: NextRequest) {
   let browser: Browser | undefined;
   try {
     browser = await getBrowser();
-    const page = await browser.newPage();
+    let page = await browser.newPage();
     await page.setViewport({ width: 390, height: 844 });
     await page.setUserAgent(
       "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
@@ -501,12 +501,18 @@ export async function GET(request: NextRequest) {
     if (hasSession) {
       const data = await scrapeUserData(page, openId);
       if (data && !("error" in data)) {
-        // 세션 유효 → 데이터 캐시 저장 후 반환
         dataCache.set(openId, { data, expiry: Date.now() + DATA_CACHE_TTL });
         return NextResponse.json({ success: true, openId, data });
       }
-      // 세션 만료됨 → 캐시 무효화 후 로그인 진행
+      // 세션 만료 → evaluateOnNewDocument가 오염된 page 폐기, 새 page로 로그인
       cachedSession = null;
+      await page.close();
+      page = await browser.newPage();
+      await page.setViewport({ width: 390, height: 844 });
+      await page.setUserAgent(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+      );
+      await setupRequestInterception(page);
     }
 
     // 2단계: 로그인 필요
