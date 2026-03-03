@@ -371,25 +371,29 @@ function addUnionRaid(widget, data) {
     pct.textColor = new Color(progColor);
     pct.minimumScaleFactor = 0.8;
 
-    // Progress bar
-    const barOuter = bossRow.addStack();
-    barOuter.size = new Size(40, 4);
-    barOuter.cornerRadius = 2;
-    barOuter.backgroundColor = new Color(COLORS.darkGray);
-
-    const barInner = barOuter.addStack();
-    barInner.size = new Size(Math.max(1, (progNum / 100) * 40), 4);
-    barInner.cornerRadius = 2;
-    barInner.backgroundColor = new Color(progColor);
-
-    bossRow.addSpacer(2);
-
     // Boss name
     const nm = bossRow.addText(boss.name || "?");
     nm.font = Font.systemFont(9);
     nm.textColor = new Color(COLORS.white);
     nm.lineLimit = 1;
     nm.minimumScaleFactor = 0.7;
+
+    bossRow.addSpacer();
+
+    // Progress bar — 남은 공간을 채우도록 가변 폭
+    const barWrap = bossRow.addStack();
+    barWrap.layoutVertically();
+    barWrap.centerAlignContent();
+
+    const barOuter = barWrap.addStack();
+    barOuter.size = new Size(80, 5);
+    barOuter.cornerRadius = 2.5;
+    barOuter.backgroundColor = new Color(COLORS.darkGray);
+
+    const barInner = barOuter.addStack();
+    barInner.size = new Size(Math.max(1, (progNum / 100) * 80), 5);
+    barInner.cornerRadius = 2.5;
+    barInner.backgroundColor = new Color(progColor);
 
     widget.addSpacer(1);
   }
