@@ -19,7 +19,9 @@
 // 인증키 발급: https://shifty-pad-widjet-server.vercel.app/register
 
 // ===== 설정 =====
-// 테마: "dark" (검은배경) | "light" (하얀배경) | "transparent" (투명)
+// 테마: "dark" (검은배경) | "light" (하얀배경) | "transparent" (투명배경)
+// transparent 사용법: THEME을 "transparent"로 바꾸고
+//   Scriptable 앱에서 스크립트를 한 번 실행 → 배경화면 스크린샷 선택
 const THEME = "dark";
 
 const API_BASE_URL = "https://shifty-pad-widjet-server.vercel.app";
@@ -105,8 +107,9 @@ const THEMES = {
     transparent: false,
   },
   transparent: {
-    bg: "#00000000",
-    bgCard: "#1a1a1a99",
+    bg: "#000000",
+    bgCard: "#1a1a1a",
+    bgCardAlpha: 0.6,
     accent: "#00b4d8",
     gold: "#ffd700",
     orange: "#FC6A37",
@@ -115,7 +118,7 @@ const THEMES = {
     purple: "#cc5de8",
     text: "#ffffff",
     gray: "#cccccc",
-    darkGray: "#ffffff33",
+    darkGray: "#888888",
     transparent: true,
   },
 };
@@ -149,6 +152,98 @@ const LABEL_KR = {
 
 function kr(label) {
   return LABEL_KR[label] || label;
+}
+
+// ===== 투명 배경 =====
+const WALLPAPER_PATH = FileManager.local().joinPath(
+  FileManager.local().documentsDirectory(), "nikke-widget-wallpaper.jpg"
+);
+
+// iPhone 위젯 위치 (screen width 기준)
+const WIDGET_POSITIONS = {
+  small:  { w: 155, h: 155 },
+  medium: { w: 329, h: 155 },
+  large:  { w: 329, h: 345 },
+};
+
+async function setupTransparentBg() {
+  const fm = FileManager.local();
+
+  const alert = new Alert();
+  alert.title = "투명 배경 설정";
+  alert.message = "배경화면 스크린샷을 선택하세요.\n\n방법: 홈 화면 빈 곳을 길게 누르고 → 위젯 없는 빈 페이지로 이동 → 스크린샷 촬영";
+  alert.addAction("사진 선택");
+  if (fm.fileExists(WALLPAPER_PATH)) {
+    alert.addAction("기존 배경 삭제");
+  }
+  alert.addCancelAction("취소");
+
+  const idx = await alert.presentAlert();
+  if (idx === -1) return;
+
+  if (idx === 1) {
+    fm.remove(WALLPAPER_PATH);
+    const done = new Alert();
+    done.title = "삭제 완료";
+    done.message = "투명 배경이 제거되었습니다.";
+    done.addAction("확인");
+    await done.presentAlert();
+    return;
+  }
+
+  const img = await Photos.fromLibrary();
+  fm.writeImage(WALLPAPER_PATH, img);
+
+  // 위젯 위치 선택
+  const posAlert = new Alert();
+  posAlert.title = "위젯 위치";
+  posAlert.message = "홈 화면에서 위젯이 놓인 위치를 선택하세요.";
+  posAlert.addAction("상단");
+  posAlert.addAction("중단");
+  posAlert.addAction("하단");
+  const posIdx = await posAlert.presentAlert();
+
+  const positions = ["top", "middle", "bottom"];
+  fm.writeString(
+    WALLPAPER_PATH + ".pos",
+    positions[posIdx]
+  );
+
+  const done = new Alert();
+  done.title = "설정 완료";
+  done.message = "위젯을 새로고침하면 투명 배경이 적용됩니다.";
+  done.addAction("확인");
+  await done.presentAlert();
+}
+
+function getTransparentBg() {
+  const fm = FileManager.local();
+  if (!fm.fileExists(WALLPAPER_PATH)) return null;
+
+  const img = fm.readImage(WALLPAPER_PATH);
+  const posFile = WALLPAPER_PATH + ".pos";
+  const pos = fm.fileExists(posFile) ? fm.readString(posFile) : "top";
+
+  const family = config.widgetFamily || "medium";
+  const screenW = Device.screenSize().width;
+  const screenH = Device.screenSize().height;
+  const scale = Device.screenScale();
+
+  // 위젯 크기 (포인트)
+  const wSize = WIDGET_POSITIONS[family] || WIDGET_POSITIONS.medium;
+
+  // 좌우 가운데 정렬, 상하는 pos에 따라
+  const x = (screenW - wSize.w) / 2;
+  let y;
+  if (pos === "top") y = family === "small" ? 76 : 76;
+  else if (pos === "middle") y = screenH / 2 - wSize.h / 2;
+  else y = screenH - wSize.h - 120;
+
+  // DrawContext로 크롭
+  const dc = new DrawContext();
+  dc.size = new Size(wSize.w * scale, wSize.h * scale);
+  dc.drawImageAtPoint(img, new Point(-x * scale, -y * scale));
+  return dc.getImage();
 }
 
 // ===== 데이터 가져오기 =====
@@ -292,7 +387,7 @@ async function addTopNikkes(widget, data) {
     col.centerAlignContent();
     col.size = new Size(cardW, cardH);
     col.cornerRadius = 4;
-    col.backgroundColor = new Color(COLORS.bgCard);
+    col.backgroundColor = new Color(COLORS.bgCard, COLORS.bgCardAlpha ?? 1);
     col.setPadding(2, 2, 2, 2);
 
     // Load and display character image
@@ -374,12 +469,10 @@ function addMissions(widget, data) {
       lbl.lineLimit = 1;
       lbl.minimumScaleFactor = 0.7;
 
-      if (m.subLabel) {
-        const sub = cell.addText(m.subLabel);
-        sub.font = Font.systemFont(6);
-        sub.textColor = new Color(COLORS.darkGray);
-        sub.lineLimit = 1;
-      }
+      const sub = cell.addText(m.subLabel || " ");
+      sub.font = Font.systemFont(6);
+      sub.textColor = m.subLabel ? new Color(COLORS.darkGray) : new Color("#00000000");
+      sub.lineLimit = 1;
 
       const val = cell.addText(m.value);
       val.font = Font.boldSystemFont(11);
@@ -456,14 +549,16 @@ async function addUnionRaid(widget, data) {
       }
     }
 
-    // Progress percentage (colored)
+    // Progress percentage (colored, 고정 너비 왼쪽 정렬)
     const progText = boss.progress || "0%";
     const progNum = parseInt(progText) || 0;
     const progColor = progNum >= 50 ? COLORS.green
       : progNum > 0 ? COLORS.orange
       : COLORS.gray;
 
-    const pct = bossRow.addText(progText.padStart(4));
+    const pctWrap = bossRow.addStack();
+    pctWrap.size = new Size(32, 0);
+    const pct = pctWrap.addText(progText);
     pct.font = Font.boldMonospacedSystemFont(10);
     pct.textColor = new Color(progColor);
     pct.minimumScaleFactor = 0.8;
@@ -544,9 +639,12 @@ function addUnionInfo(widget, data) {
 async function buildWidget(data) {
   const w = new ListWidget();
   if (COLORS.transparent) {
-    w.backgroundGradient = new LinearGradient();
-    w.backgroundGradient.colors = [new Color("#00000000"), new Color("#00000000")];
-    w.backgroundGradient.locations = [0, 1];
+    const bgImg = getTransparentBg();
+    if (bgImg) {
+      w.backgroundImage = bgImg;
+    } else {
+      w.backgroundColor = new Color("#000000");
+    }
   } else {
     w.backgroundColor = new Color(COLORS.bg);
   }
@@ -634,6 +732,27 @@ function formatTime(isoString) {
 
 // ===== 실행 =====
 async function main() {
+  // 투명 테마: 앱에서 실행 시 배경화면 설정 모드
+  if (COLORS.transparent && !config.runsInWidget) {
+    const fm = FileManager.local();
+    if (!fm.fileExists(WALLPAPER_PATH)) {
+      await setupTransparentBg();
+      return Script.complete();
+    }
+    // 배경이 있으면 미리보기 + 재설정 옵션
+    const menu = new Alert();
+    menu.title = "투명 위젯";
+    menu.addAction("미리보기");
+    menu.addAction("배경 재설정");
+    menu.addCancelAction("취소");
+    const choice = await menu.presentAlert();
+    if (choice === 1) {
+      await setupTransparentBg();
+      return Script.complete();
+    }
+    if (choice === -1) return Script.complete();
+  }
+
   const data = await fetchData();
   const widget = await buildWidget(data);
 
