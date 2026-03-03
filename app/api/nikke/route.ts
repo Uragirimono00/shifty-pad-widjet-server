@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import puppeteer, { Browser, Page } from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
+import { decrypt } from "@/lib/crypto";
 
 export const maxDuration = 60;
 
@@ -10,7 +11,7 @@ interface CachedSession {
   localStorage: Record<string, string>;
   expiry: number;
 }
-let cachedSession: CachedSession | null = null;
+const sessionCache = new Map<string, CachedSession>(); // email별 세션 캐시
 const SESSION_TTL = 60 * 60 * 1000; // 1시간
 
 // SPA 인증에 필요한 localStorage 키
@@ -82,20 +83,19 @@ async function setupRequestInterception(page: Page) {
 }
 
 // 캐싱된 세션(쿠키+localStorage) 복원
-async function restoreSession(page: Page): Promise<boolean> {
-  if (!cachedSession || Date.now() >= cachedSession.expiry) return false;
+async function restoreSession(page: Page, sessionKey: string): Promise<boolean> {
+  const session = sessionCache.get(sessionKey);
+  if (!session || Date.now() >= session.expiry) return false;
 
-  // 쿠키 설정
-  if (cachedSession.cookies.length > 0) {
-    await page.setCookie(...cachedSession.cookies.map(c => ({
+  if (session.cookies.length > 0) {
+    await page.setCookie(...session.cookies.map(c => ({
       ...c,
       secure: true,
       sameSite: "None" as const,
     })));
   }
 
-  // localStorage 설정 — 페이지 로드 전에 주입
-  const lsData = cachedSession.localStorage;
+  const lsData = session.localStorage;
   await page.evaluateOnNewDocument((data) => {
     for (const [key, value] of Object.entries(data)) {
       localStorage.setItem(key, value);
@@ -106,7 +106,7 @@ async function restoreSession(page: Page): Promise<boolean> {
 }
 
 // 로그인 성공 후 세션(쿠키+localStorage) 저장
-async function saveSession(page: Page) {
+async function saveSession(page: Page, sessionKey: string) {
   const cookies = await page.cookies();
   const localStorage = await page.evaluate((keys) => {
     const result: Record<string, string> = {};
@@ -117,7 +117,7 @@ async function saveSession(page: Page) {
     return result;
   }, ESSENTIAL_LS_KEYS);
 
-  cachedSession = {
+  sessionCache.set(sessionKey, {
     cookies: cookies.map(c => ({
       name: c.name,
       value: c.value,
@@ -126,7 +126,7 @@ async function saveSession(page: Page) {
     })),
     localStorage,
     expiry: Date.now() + SESSION_TTL,
-  };
+  });
 }
 
 async function dismissPopups(page: Page) {
@@ -428,19 +428,21 @@ async function scrapeUserData(page: Page, openId: string) {
       });
     }
 
-    const bosses: Array<{ name: string; progress: string; damage: string; hp: string; imageUrl: string }> = [];
+    const bosses: Array<{ name: string; progress: string; damage: string; hp: string; imageUrl: string; elementIcon: string }> = [];
     const bossRows = document.querySelectorAll("[guild_info] .shadow-md");
     bossRows.forEach((row) => {
       const nameEl = row.querySelector("[class*='text-\\[16px\\]']");
       const progressEl = row.querySelector("[class*='text-\\[\\#FC6A37\\]']");
       const numSpans = row.querySelectorAll("[class*='text-\\[8px\\]']");
       const bgImg = row.querySelector("img[loading='lazy']") as HTMLImageElement | null;
+      const iconImg = row.querySelector("img[src*='icon-code']") as HTMLImageElement | null;
       bosses.push({
         name: getText(nameEl),
         progress: getText(progressEl),
         damage: numSpans[0] ? getText(numSpans[0]) : "",
         hp: numSpans[1] ? getText(numSpans[1]) : "",
         imageUrl: bgImg?.src ?? "",
+        elementIcon: iconImg?.src ?? "",
       });
     });
 
@@ -462,29 +464,48 @@ async function scrapeUserData(page: Page, openId: string) {
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const openId = searchParams.get("openid");
-  const email = searchParams.get("email") || process.env.BLABLA_EMAIL || "";
-  const password = searchParams.get("password") || process.env.BLABLA_PASSWORD || "";
+  const authKey = searchParams.get("key");
+
+  // 인증키가 있으면 복호화, 없으면 환경변수 사용
+  let email = "";
+  let password = "";
+  if (authKey) {
+    try {
+      const cred = JSON.parse(decrypt(authKey));
+      email = cred.email || "";
+      password = cred.password || "";
+    } catch {
+      return NextResponse.json({ error: "유효하지 않은 인증키입니다." }, { status: 401 });
+    }
+  } else {
+    email = process.env.BLABLA_EMAIL || "";
+    password = process.env.BLABLA_PASSWORD || "";
+  }
 
   if (!openId) {
     return NextResponse.json({
       error: "openid parameter is required.",
-      example: "/api/nikke?openid=5811974927458150963",
-      setup: "Set BLABLA_EMAIL and BLABLA_PASSWORD environment variables for auto-login.",
+      example: "/api/nikke?openid=5811974927458150963&key=YOUR_AUTH_KEY",
     }, { status: 400 });
   }
 
   if (!email || !password) {
     return NextResponse.json({
-      error: "Login credentials not configured.",
-      setup: "Set BLABLA_EMAIL and BLABLA_PASSWORD as environment variables (Vercel or .env.local)",
+      error: "인증 정보가 없습니다. 인증키(key)를 발급받거나 환경변수를 설정해주세요.",
+      register: "/register 페이지에서 인증키를 발급받으세요.",
     }, { status: 401 });
   }
 
   // 캐싱된 데이터가 있으면 바로 반환
-  const cached = dataCache.get(openId);
+  // 데이터 캐시 키: email+openid 조합 (같은 계정으로 같은 프로필 조회 시 캐시)
+  const cacheKey = `${email}:${openId}`;
+  const cached = dataCache.get(cacheKey);
   if (cached && Date.now() < cached.expiry) {
     return NextResponse.json({ success: true, openId, data: cached.data, cached: true });
   }
+
+  // 세션 캐시 키: email 기반 (같은 계정이면 세션 공유)
+  const sessionKey = email;
 
   let browser: Browser | undefined;
   try {
@@ -497,15 +518,15 @@ export async function GET(request: NextRequest) {
     await setupRequestInterception(page);
 
     // 1단계: 캐싱된 세션(쿠키+localStorage)으로 바로 시도
-    const hasSession = await restoreSession(page);
+    const hasSession = await restoreSession(page, sessionKey);
     if (hasSession) {
       const data = await scrapeUserData(page, openId);
       if (data && !("error" in data)) {
-        dataCache.set(openId, { data, expiry: Date.now() + DATA_CACHE_TTL });
+        dataCache.set(cacheKey, { data, expiry: Date.now() + DATA_CACHE_TTL });
         return NextResponse.json({ success: true, openId, data });
       }
-      // 세션 만료 → evaluateOnNewDocument가 오염된 page 폐기, 새 page로 로그인
-      cachedSession = null;
+      // 세션 만료 → page 폐기, 새 page로 로그인
+      sessionCache.delete(sessionKey);
       await page.close();
       page = await browser.newPage();
       await page.setViewport({ width: 390, height: 844 });
@@ -526,13 +547,13 @@ export async function GET(request: NextRequest) {
     }
 
     // 세션 저장 (쿠키 + localStorage)
-    await saveSession(page);
+    await saveSession(page, sessionKey);
 
     // 3단계: 데이터 스크래핑
     const data = await scrapeUserData(page, openId);
 
     if (data && !("error" in data)) {
-      dataCache.set(openId, { data, expiry: Date.now() + DATA_CACHE_TTL });
+      dataCache.set(cacheKey, { data, expiry: Date.now() + DATA_CACHE_TTL });
     }
 
     return NextResponse.json({ success: true, openId, data });

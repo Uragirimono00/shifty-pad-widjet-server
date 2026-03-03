@@ -3,7 +3,7 @@
 // ============================================
 //
 // Parameter 입력 형식:
-//   openid|보고싶은항목,항목,항목
+//   openid|보고싶은항목,항목,항목|인증키
 //
 // 사용 가능한 항목:
 //   프로필, 싱크로, 전투력, 타워, 캠페인,
@@ -11,10 +11,12 @@
 //   보관함, 유니온, 레이드
 //
 // 예시:
-//   5811974927458150963|싱크로,전투력,타워,레이드
-//   5811974927458150963|전체
-//   5811974927458150963|니케,레이드
-//   5811974927458150963            ← 기본(전투력+타워+레이드)
+//   5811974927458150963|싱크로,전투력,타워,레이드|인증키
+//   5811974927458150963|전체|인증키
+//   5811974927458150963|레이드          ← 서버 기본 계정 사용
+//   5811974927458150963                 ← 기본 항목
+//
+// 인증키 발급: https://shifty-pad-widjet-server.vercel.app/register
 
 // ===== 설정 =====
 const API_BASE_URL = "https://shifty-pad-widjet-server.vercel.app";
@@ -25,6 +27,7 @@ const param = (args.widgetParameter || "").trim();
 const parts = param.split("|").map(s => s.trim());
 const OPEN_ID = parts[0] || DEFAULT_OPEN_ID;
 const fieldInput = parts[1] || "";
+const AUTH_KEY = parts[2] || "";
 
 // 한국어 키워드 → 필드 매핑
 const FIELD_MAP = {
@@ -63,6 +66,10 @@ const ACTIVE_FIELDS = parseFields(fieldInput);
 
 // 상위 니케 표시 개수 (1~5)
 const TOP_NIKKE_COUNT = 5;
+
+// 위젯 크기 감지
+const WIDGET_FAMILY = config.widgetFamily || "medium";
+const IS_WIDE = WIDGET_FAMILY !== "small";
 
 // ===== 색상 테마 =====
 const COLORS = {
@@ -110,7 +117,8 @@ function kr(label) {
 
 // ===== 데이터 가져오기 =====
 async function fetchData() {
-  const url = `${API_BASE_URL}/api/nikke?openid=${OPEN_ID}`;
+  let url = `${API_BASE_URL}/api/nikke?openid=${OPEN_ID}`;
+  if (AUTH_KEY) url += `&key=${encodeURIComponent(AUTH_KEY)}`;
   const req = new Request(url);
   req.timeoutInterval = 120;
   try {
@@ -172,7 +180,6 @@ function addDivider(widget) {
 function addStatRow(container, items) {
   const row = container.addStack();
   row.layoutHorizontally();
-  row.spacing = 0;
 
   items.forEach((item, i) => {
     if (i > 0) row.addSpacer();
@@ -188,6 +195,7 @@ function addStatRow(container, items) {
     val.font = Font.boldSystemFont(13);
     val.textColor = new Color(item.color || COLORS.white);
   });
+  row.addSpacer();
 }
 
 // ===== 기본정보 섹션 =====
@@ -235,13 +243,18 @@ async function addTopNikkes(widget, data) {
 
   const row = widget.addStack();
   row.layoutHorizontally();
-  row.spacing = 6;
+  row.spacing = IS_WIDE ? 10 : 6;
+
+  const cardW = IS_WIDE ? 56 : 48;
+  const cardH = IS_WIDE ? 72 : 64;
+  const imgW = cardW - 4;
+  const imgH = IS_WIDE ? 48 : 40;
 
   for (const nikke of nikkes) {
     const col = row.addStack();
     col.layoutVertically();
     col.centerAlignContent();
-    col.size = new Size(48, 64);
+    col.size = new Size(cardW, cardH);
     col.cornerRadius = 4;
     col.backgroundColor = new Color(COLORS.bgCard);
     col.setPadding(2, 2, 2, 2);
@@ -251,7 +264,7 @@ async function addTopNikkes(widget, data) {
       const img = await loadImage(nikke.imageUrl);
       if (img) {
         const imgWidget = col.addImage(img);
-        imgWidget.imageSize = new Size(44, 40);
+        imgWidget.imageSize = new Size(imgW, imgH);
         imgWidget.cornerRadius = 2;
       }
     }
@@ -287,13 +300,13 @@ function addMissions(widget, data) {
   title.textColor = new Color(COLORS.accent);
   widget.addSpacer(2);
 
-  // Show missions in 2-column layout
+  // Show missions in 3-column layout (가로 전체 활용)
   for (let i = 0; i < Math.min(missions.length, 6); i += 3) {
     const row = widget.addStack();
     row.layoutHorizontally();
-    row.spacing = 8;
 
     for (let j = i; j < Math.min(i + 3, missions.length); j++) {
+      if (j > i) row.addSpacer();
       const m = missions[j];
       const cell = row.addStack();
       cell.layoutVertically();
@@ -307,12 +320,13 @@ function addMissions(widget, data) {
       val.font = Font.boldSystemFont(10);
       val.textColor = new Color(COLORS.white);
     }
+    row.addSpacer();
     widget.addSpacer(1);
   }
 }
 
 // ===== 유니온 레이드 섹션 =====
-function addUnionRaid(widget, data) {
+async function addUnionRaid(widget, data) {
   const raid = data.unionRaid;
   if (!raid) return;
 
@@ -368,6 +382,15 @@ function addUnionRaid(widget, data) {
     bossRow.centerAlignContent();
     bossRow.spacing = 4;
 
+    // Element icon
+    if (boss.elementIcon) {
+      const icon = await loadImage(boss.elementIcon);
+      if (icon) {
+        const iconWidget = bossRow.addImage(icon);
+        iconWidget.imageSize = new Size(12, 12);
+      }
+    }
+
     // Progress percentage (colored)
     const progText = boss.progress || "0%";
     const progNum = parseInt(progText) || 0;
@@ -389,18 +412,19 @@ function addUnionRaid(widget, data) {
 
     bossRow.addSpacer();
 
-    // Progress bar — 남은 공간을 채우도록 가변 폭
+    // Progress bar — 위젯 크기에 맞게 가변 폭
+    const barWidth = IS_WIDE ? 160 : 80;
     const barWrap = bossRow.addStack();
     barWrap.layoutVertically();
     barWrap.centerAlignContent();
 
     const barOuter = barWrap.addStack();
-    barOuter.size = new Size(80, 5);
+    barOuter.size = new Size(barWidth, 5);
     barOuter.cornerRadius = 2.5;
     barOuter.backgroundColor = new Color(COLORS.darkGray);
 
     const barInner = barOuter.addStack();
-    barInner.size = new Size(Math.max(1, (progNum / 100) * 80), 5);
+    barInner.size = new Size(Math.max(1, (progNum / 100) * barWidth), 5);
     barInner.cornerRadius = 2.5;
     barInner.backgroundColor = new Color(progColor);
 
@@ -433,7 +457,6 @@ function addUnionInfo(widget, data) {
   // Union stats
   const statsRow = widget.addStack();
   statsRow.layoutHorizontally();
-  statsRow.spacing = 12;
 
   const members = u["Union Members"] || u["유니온 멤버"];
   if (members) {
@@ -441,6 +464,8 @@ function addUnionInfo(widget, data) {
     mt.font = Font.systemFont(8);
     mt.textColor = new Color(COLORS.gray);
   }
+
+  statsRow.addSpacer();
 
   const activity = u["Union Activity"] || u["유니온 활약도"];
   if (activity) {
@@ -520,7 +545,7 @@ async function buildWidget(data) {
   if (F.has("unionInfo")) addUnionInfo(w, data);
 
   // 유니온 레이드
-  if (F.has("unionRaid")) addUnionRaid(w, data);
+  if (F.has("unionRaid")) await addUnionRaid(w, data);
 
   return w;
 }
