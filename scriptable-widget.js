@@ -343,12 +343,17 @@ function addMissions(widget, data) {
     storageRow.layoutHorizontally();
     storageRow.centerAlignContent();
 
-    const st = storageRow.addText(`보관함 ${storage}`);
-    st.font = Font.systemFont(9);
-    st.textColor = new Color(COLORS.gray);
+    const stLabel = storageRow.addText("보관함");
+    stLabel.font = Font.boldSystemFont(10);
+    stLabel.textColor = new Color(COLORS.text);
 
     storageRow.addSpacer();
-    widget.addSpacer(2);
+
+    const stVal = storageRow.addText(storage);
+    stVal.font = Font.boldSystemFont(13);
+    stVal.textColor = new Color(COLORS.accent);
+
+    widget.addSpacer(3);
   }
 
   // 전체 미션을 3열 레이아웃으로 표시 (제한 없음)
@@ -558,8 +563,10 @@ async function buildWidget(data) {
   const F = new Set(ACTIVE_FIELDS);
 
   // Header (profile 포함 시)
-  if (F.has("profile")) addHeader(w, data);
-  w.addSpacer(4);
+  if (F.has("profile")) {
+    addHeader(w, data);
+    w.addSpacer(4);
+  }
 
   // 기본 스탯 행
   const info = data.userInfo;
