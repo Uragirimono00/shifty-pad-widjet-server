@@ -332,7 +332,7 @@ function addMissions(widget, data) {
   if (missions.length === 0 && !storage) return;
 
   widget.addSpacer(4);
-  const title = widget.addText("매일 미션");
+  const title = widget.addText("데일리 미션");
   title.font = Font.boldSystemFont(10);
   title.textColor = new Color(COLORS.accent);
   widget.addSpacer(2);
@@ -356,21 +356,23 @@ function addMissions(widget, data) {
     widget.addSpacer(3);
   }
 
-  // 전체 미션을 3열 레이아웃으로 표시 (제한 없음)
+  // 전체 미션을 3열 고정 그리드로 표시
+  const colWidth = IS_WIDE ? 100 : 44;
   for (let i = 0; i < missions.length; i += 3) {
     const row = widget.addStack();
     row.layoutHorizontally();
 
     for (let j = i; j < Math.min(i + 3, missions.length); j++) {
-      if (j > i) row.addSpacer();
       const m = missions[j];
       const cell = row.addStack();
       cell.layoutVertically();
+      cell.size = new Size(colWidth, 0);
 
       const lbl = cell.addText(kr(m.label));
       lbl.font = Font.systemFont(8);
       lbl.textColor = new Color(COLORS.gray);
       lbl.lineLimit = 1;
+      lbl.minimumScaleFactor = 0.7;
 
       if (m.subLabel) {
         const sub = cell.addText(m.subLabel);
@@ -380,11 +382,11 @@ function addMissions(widget, data) {
       }
 
       const val = cell.addText(m.value);
-      val.font = Font.boldSystemFont(10);
+      val.font = Font.boldSystemFont(11);
       val.textColor = new Color(COLORS.text);
     }
     row.addSpacer();
-    widget.addSpacer(1);
+    widget.addSpacer(2);
   }
 }
 
