@@ -19,6 +19,9 @@
 // 인증키 발급: https://shifty-pad-widjet-server.vercel.app/register
 
 // ===== 설정 =====
+// 테마: "dark" (검은배경) | "light" (하얀배경) | "transparent" (투명)
+const THEME = "dark";
+
 const API_BASE_URL = "https://shifty-pad-widjet-server.vercel.app";
 const DEFAULT_OPEN_ID = "5811974927458150963";
 
@@ -59,7 +62,7 @@ function parseFields(input) {
     const mapped = FIELD_MAP[keyword];
     if (mapped) fields.push(mapped);
   }
-  return fields.length > 0 ? ["profile", ...fields] : DEFAULT_FIELDS;
+  return fields.length > 0 ? fields : DEFAULT_FIELDS;
 }
 
 const ACTIVE_FIELDS = parseFields(fieldInput);
@@ -71,20 +74,53 @@ const TOP_NIKKE_COUNT = 5;
 const WIDGET_FAMILY = config.widgetFamily || "medium";
 const IS_WIDE = WIDGET_FAMILY !== "small";
 
-// ===== 색상 테마 =====
-const COLORS = {
-  bg: "#0d1117",
-  bgCard: "#161b22",
-  accent: "#00b4d8",
-  gold: "#ffd700",
-  orange: "#FC6A37",
-  red: "#ff6b6b",
-  green: "#51cf66",
-  purple: "#cc5de8",
-  white: "#ffffff",
-  gray: "#8b949e",
-  darkGray: "#30363d",
+// ===== 테마 색상 =====
+const THEMES = {
+  dark: {
+    bg: "#0d1117",
+    bgCard: "#161b22",
+    accent: "#00b4d8",
+    gold: "#ffd700",
+    orange: "#FC6A37",
+    red: "#ff6b6b",
+    green: "#51cf66",
+    purple: "#cc5de8",
+    text: "#ffffff",
+    gray: "#8b949e",
+    darkGray: "#30363d",
+    transparent: false,
+  },
+  light: {
+    bg: "#ffffff",
+    bgCard: "#f0f2f5",
+    accent: "#0077cc",
+    gold: "#c89200",
+    orange: "#d95319",
+    red: "#d9534f",
+    green: "#2ea043",
+    purple: "#8b5cf6",
+    text: "#1a1a1a",
+    gray: "#57606a",
+    darkGray: "#d0d7de",
+    transparent: false,
+  },
+  transparent: {
+    bg: "#00000000",
+    bgCard: "#1a1a1a99",
+    accent: "#00b4d8",
+    gold: "#ffd700",
+    orange: "#FC6A37",
+    red: "#ff6b6b",
+    green: "#51cf66",
+    purple: "#cc5de8",
+    text: "#ffffff",
+    gray: "#cccccc",
+    darkGray: "#ffffff33",
+    transparent: true,
+  },
 };
+
+const COLORS = THEMES[THEME] || THEMES.dark;
 
 // 영어→한국어 라벨 매핑
 const LABEL_KR = {
@@ -152,7 +188,7 @@ function addHeader(widget, data) {
   if (data.profile?.nickname) {
     const name = titleStack.addText(data.profile.nickname);
     name.font = Font.boldSystemFont(15);
-    name.textColor = new Color(COLORS.white);
+    name.textColor = new Color(COLORS.text);
   }
 
   const sub = titleStack.addText(
@@ -193,7 +229,7 @@ function addStatRow(container, items) {
 
     const val = box.addText(String(item.value));
     val.font = Font.boldSystemFont(13);
-    val.textColor = new Color(item.color || COLORS.white);
+    val.textColor = new Color(item.color || COLORS.text);
   });
   row.addSpacer();
 }
@@ -292,7 +328,8 @@ async function addTopNikkes(widget, data) {
 // ===== 미션 섹션 =====
 function addMissions(widget, data) {
   const missions = data.dailyMission?.missions || [];
-  if (missions.length === 0) return;
+  const storage = data.dailyMission?.storageCapacity;
+  if (missions.length === 0 && !storage) return;
 
   widget.addSpacer(4);
   const title = widget.addText("매일 미션");
@@ -300,8 +337,22 @@ function addMissions(widget, data) {
   title.textColor = new Color(COLORS.accent);
   widget.addSpacer(2);
 
-  // Show missions in 3-column layout (가로 전체 활용)
-  for (let i = 0; i < Math.min(missions.length, 6); i += 3) {
+  // 보관함 용량
+  if (storage) {
+    const storageRow = widget.addStack();
+    storageRow.layoutHorizontally();
+    storageRow.centerAlignContent();
+
+    const st = storageRow.addText(`보관함 ${storage}`);
+    st.font = Font.systemFont(9);
+    st.textColor = new Color(COLORS.gray);
+
+    storageRow.addSpacer();
+    widget.addSpacer(2);
+  }
+
+  // 전체 미션을 3열 레이아웃으로 표시 (제한 없음)
+  for (let i = 0; i < missions.length; i += 3) {
     const row = widget.addStack();
     row.layoutHorizontally();
 
@@ -316,9 +367,16 @@ function addMissions(widget, data) {
       lbl.textColor = new Color(COLORS.gray);
       lbl.lineLimit = 1;
 
+      if (m.subLabel) {
+        const sub = cell.addText(m.subLabel);
+        sub.font = Font.systemFont(6);
+        sub.textColor = new Color(COLORS.darkGray);
+        sub.lineLimit = 1;
+      }
+
       const val = cell.addText(m.value);
       val.font = Font.boldSystemFont(10);
-      val.textColor = new Color(COLORS.white);
+      val.textColor = new Color(COLORS.text);
     }
     row.addSpacer();
     widget.addSpacer(1);
@@ -406,7 +464,7 @@ async function addUnionRaid(widget, data) {
     // Boss name
     const nm = bossRow.addText(boss.name || "?");
     nm.font = Font.systemFont(9);
-    nm.textColor = new Color(COLORS.white);
+    nm.textColor = new Color(COLORS.text);
     nm.lineLimit = 1;
     nm.minimumScaleFactor = 0.7;
 
@@ -478,7 +536,13 @@ function addUnionInfo(widget, data) {
 // ===== 메인 위젯 빌드 =====
 async function buildWidget(data) {
   const w = new ListWidget();
-  w.backgroundColor = new Color(COLORS.bg);
+  if (COLORS.transparent) {
+    w.backgroundGradient = new LinearGradient();
+    w.backgroundGradient.colors = [new Color("#00000000"), new Color("#00000000")];
+    w.backgroundGradient.locations = [0, 1];
+  } else {
+    w.backgroundColor = new Color(COLORS.bg);
+  }
   w.setPadding(10, 12, 10, 12);
 
   if (!data) {
@@ -511,7 +575,7 @@ async function buildWidget(data) {
   if (F.has("overclock") && info["Overclock Mode"])
     stats.push({ label: "오버클럭", value: info["Overclock Mode"], color: COLORS.purple });
   if (F.has("costumes") && info["Costumes"])
-    stats.push({ label: "코스튬", value: info["Costumes"], color: COLORS.white });
+    stats.push({ label: "코스튬", value: info["Costumes"], color: COLORS.text });
 
   if (stats.length > 0) addStatRow(w, stats);
 
@@ -528,8 +592,8 @@ async function buildWidget(data) {
     }
   }
 
-  // 보관함
-  if (F.has("storage") && data.dailyMission?.storageCapacity) {
+  // 보관함 (미션에 포함되지 않을 때만 단독 표시)
+  if (F.has("storage") && !F.has("missions") && data.dailyMission?.storageCapacity) {
     const s = w.addText(`보관함 ${data.dailyMission.storageCapacity}`);
     s.font = Font.systemFont(9);
     s.textColor = new Color(COLORS.gray);
@@ -538,7 +602,7 @@ async function buildWidget(data) {
   // 상위 니케
   if (F.has("topNikkes")) await addTopNikkes(w, data);
 
-  // 미션
+  // 미션 (보관함 포함)
   if (F.has("missions")) addMissions(w, data);
 
   // 유니온 정보

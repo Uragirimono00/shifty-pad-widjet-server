@@ -254,12 +254,14 @@ async function scrapeUserData(page: Page, openId: string) {
 
   await dismissPopups(page);
 
-  // Expand section + 짧은 대기
+  // Expand section + 스크롤하여 하단 섹션 로드
   await page.evaluate(() => {
     const expandBtn = document.querySelector(".expand-btn");
     if (expandBtn) (expandBtn as HTMLElement).click();
+    // 페이지 맨 아래까지 스크롤하여 lazy-load 요소들 트리거
+    window.scrollTo(0, document.body.scrollHeight);
   });
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => setTimeout(r, 1500));
 
   return page.evaluate(() => {
     const getText = (el: Element | null): string => el?.textContent?.trim() ?? "";
@@ -364,14 +366,22 @@ async function scrapeUserData(page: Page, openId: string) {
       });
     });
 
-    // 4. Storage capacity
+    // 4. Storage capacity — 보관함 용량
     let storageCapacity = "";
-    const storageRow = document.querySelector("[class*='outpost-defense']");
-    if (storageRow) {
-      const container = storageRow.closest("[class*='border']");
-      if (container) {
-        const valEl = container.querySelector("[class*='DINNextLTProBold']");
-        storageCapacity = getText(valEl);
+    const allLabels = document.querySelectorAll("div, span, p");
+    for (const el of allLabels) {
+      const t = el.textContent?.trim() || "";
+      if ((t.includes("보관함") || t === "Storage") && t.length < 30 && el.children.length <= 1) {
+        let section = el.parentElement;
+        for (let k = 0; k < 5 && section; k++) {
+          const pctEl = section.querySelector("[class*='DINNextLTProBold']");
+          if (pctEl) {
+            storageCapacity = getText(pctEl);
+            break;
+          }
+          section = section.parentElement;
+        }
+        break;
       }
     }
 
