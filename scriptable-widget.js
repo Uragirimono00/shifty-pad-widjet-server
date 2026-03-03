@@ -8,7 +8,7 @@
 // 4. 홈화면에 Scriptable 위젯 추가
 
 // ===== 설정 =====
-const API_BASE_URL = "https://YOUR_VERCEL_URL.vercel.app";
+const API_BASE_URL = "https://shifty-pad-widjet-server.vercel.app";
 const OPEN_ID = "5811974927458150963";
 
 // 위젯 모드: "basic" | "raid" | "both" | "nikkes" | "custom"
