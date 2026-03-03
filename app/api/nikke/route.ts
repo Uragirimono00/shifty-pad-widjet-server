@@ -62,13 +62,15 @@ async function getBrowser(): Promise<Browser> {
   });
 }
 
-// 불필요한 리소스 차단 (이미지, CSS, 폰트, 미디어, 분석 스크립트)
+// 불필요한 리소스 차단 (스크래핑 시에만 활성화, 로그인 시에는 비활성화)
 const BLOCKED_DOMAINS = ["aegis.qq.com", "google-analytics.com", "googletagmanager.com", "facebook.net", "doubleclick.net"];
 const BLOCKED_TYPES = new Set(["image", "stylesheet", "font", "media"]);
+const pageBlocking = new WeakSet<Page>();
 
-async function enableRequestBlocking(page: Page) {
+async function setupRequestInterception(page: Page) {
   await page.setRequestInterception(true);
   page.on("request", (req) => {
+    if (!pageBlocking.has(page)) { req.continue(); return; }
     const type = req.resourceType();
     const url = req.url();
     if (BLOCKED_TYPES.has(type) || BLOCKED_DOMAINS.some(d => url.includes(d))) {
@@ -144,57 +146,63 @@ async function dismissPopups(page: Page) {
 }
 
 async function loginWithPuppeteer(page: Page, email: string, password: string): Promise<boolean> {
-  // Navigate to login page - domcontentloaded is enough, no need to wait for all resources
+  // 로그인 시에는 리소스 차단 OFF (SPA가 완전히 렌더링되어야 함)
+  pageBlocking.delete(page);
+
   await page.goto("https://www.blablalink.com/login?to=/shiftyspad/home", {
-    waitUntil: "domcontentloaded",
-    timeout: 15000,
+    waitUntil: "networkidle2",
+    timeout: 20000,
   });
 
-  // Wait for login form to appear instead of fixed 3s wait
+  // 로그인 폼이 나타날 때까지 대기
   try {
     await page.waitForSelector("#loginPwdForm_account", { timeout: 8000 });
   } catch {
-    // Form might need popup dismiss or tab switch first
-    await new Promise((r) => setTimeout(r, 1500));
+    // 폼이 안 보이면 팝업/탭 전환 필요할 수 있음
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
   await dismissPopups(page);
 
-  // Select region + switch to password tab in one evaluate
+  // 리전 선택
   await page.evaluate(() => {
     const els = document.querySelectorAll("*");
     for (const el of els) {
-      const text = el.textContent?.trim();
-      if (text === "JP/KR/NA/SEA/Global" && el.children.length <= 2) {
+      if (el.textContent?.trim() === "JP/KR/NA/SEA/Global" && el.children.length <= 2) {
         (el as HTMLElement).click();
-      }
-      if (text === "Password login" && el.children.length === 0) {
-        (el as HTMLElement).click();
+        return;
       }
     }
   });
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 500));
 
-  // Fill email & password instantly via JS (no slow typing)
-  await page.evaluate((e, p) => {
-    const emailEl = document.querySelector("#loginPwdForm_account") as HTMLInputElement;
-    const pwdEl = document.querySelector("#loginPwdForm_password") as HTMLInputElement;
-
-    // React/Ant Design inputs need native input event simulation
-    function setNativeValue(el: HTMLInputElement, value: string) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      setter?.call(el, value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+  // 비밀번호 로그인 탭 전환
+  await page.evaluate(() => {
+    const els = document.querySelectorAll("*");
+    for (const el of els) {
+      if (el.textContent?.trim() === "Password login" && el.children.length === 0) {
+        (el as HTMLElement).click();
+        return;
+      }
     }
+  });
+  await new Promise((r) => setTimeout(r, 500));
 
-    if (emailEl) { emailEl.focus(); setNativeValue(emailEl, e); }
-    if (pwdEl) { pwdEl.focus(); setNativeValue(pwdEl, p); }
-  }, email, password);
+  // 이메일 입력
+  const emailInput = await page.$("#loginPwdForm_account");
+  if (emailInput) {
+    await emailInput.click({ clickCount: 3 });
+    await emailInput.type(email, { delay: 30 });
+  }
 
-  await new Promise((r) => setTimeout(r, 200));
+  // 비밀번호 입력
+  const pwdInput = await page.$("#loginPwdForm_password");
+  if (pwdInput) {
+    await pwdInput.click({ clickCount: 3 });
+    await pwdInput.type(password, { delay: 30 });
+  }
 
-  // Click login button
+  // 로그인 버튼 클릭
   await page.evaluate(() => {
     const buttons = document.querySelectorAll("button, div[class*='btn'], span");
     for (const btn of buttons) {
@@ -212,20 +220,23 @@ async function loginWithPuppeteer(page: Page, email: string, password: string): 
     }
   });
 
-  // Wait for redirect (login complete) instead of fixed 3s + networkidle2
+  // 리디렉트 대기 (로그인 완료)
   try {
-    await page.waitForFunction(() => !window.location.href.includes("/login"), { timeout: 10000 });
+    await page.waitForFunction(() => !window.location.href.includes("/login"), { timeout: 15000 });
   } catch {
-    // Fallback: might already be redirected
+    // fallback
   }
 
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => setTimeout(r, 1000));
 
   const currentUrl = page.url();
   return !currentUrl.includes("/login");
 }
 
 async function scrapeUserData(page: Page, openId: string) {
+  // 스크래핑 시에는 리소스 차단 ON (속도 최적화)
+  pageBlocking.add(page);
+
   const encodedId = encodeOpenId(openId);
   const targetUrl = `https://www.blablalink.com/shiftyspad/home?uid=${encodeURIComponent(encodedId)}&openid=${encodeURIComponent(encodedId)}`;
 
@@ -483,7 +494,7 @@ export async function GET(request: NextRequest) {
     await page.setUserAgent(
       "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     );
-    await enableRequestBlocking(page);
+    await setupRequestInterception(page);
 
     // 1단계: 캐싱된 세션(쿠키+localStorage)으로 바로 시도
     const hasSession = await restoreSession(page);
