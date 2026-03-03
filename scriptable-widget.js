@@ -1,35 +1,65 @@
 // ============================================
 // NIKKE ShiftyPad Widget for Scriptable
 // ============================================
-// 설정 방법:
-// 1. API_BASE_URL을 Vercel 배포 URL로 변경
-// 2. OPEN_ID를 본인 openid로 변경
-// 3. WIDGET_MODE를 원하는 모드로 설정
-// 4. 홈화면에 Scriptable 위젯 추가
+//
+// Parameter 입력 형식:
+//   openid|보고싶은항목,항목,항목
+//
+// 사용 가능한 항목:
+//   프로필, 싱크로, 전투력, 타워, 캠페인,
+//   작전인원, 코스튬, 오버클럭, 니케, 미션,
+//   보관함, 유니온, 레이드
+//
+// 예시:
+//   5811974927458150963|싱크로,전투력,타워,레이드
+//   5811974927458150963|전체
+//   5811974927458150963|니케,레이드
+//   5811974927458150963            ← 기본(전투력+타워+레이드)
 
 // ===== 설정 =====
 const API_BASE_URL = "https://shifty-pad-widjet-server.vercel.app";
-const OPEN_ID = "5811974927458150963";
+const DEFAULT_OPEN_ID = "5811974927458150963";
 
-// 위젯 모드: "basic" | "raid" | "both" | "nikkes" | "custom"
-const WIDGET_MODE = "both";
+// ===== Parameter 파싱 =====
+const param = (args.widgetParameter || "").trim();
+const parts = param.split("|").map(s => s.trim());
+const OPEN_ID = parts[0] || DEFAULT_OPEN_ID;
+const fieldInput = parts[1] || "";
 
-// custom 모드일 때 보여줄 항목 선택 (true/false)
-const CUSTOM_FIELDS = {
-  profile: true,        // 닉네임, 레벨
-  synchroLevel: true,   // 싱크로 레벨
-  squadPower: true,     // 스쿼드 전투력
-  tower: true,          // 타워
-  campaign: false,      // 캠페인 (노말/하드)
-  nikkes: false,        // 작전 인원
-  costumes: false,      // 코스튬
-  overclock: true,      // 오버클럭
-  topNikkes: true,      // 상위 니케 (이미지 포함)
-  missions: false,      // 매일 미션
-  storage: false,       // 보관함 용량
-  unionInfo: false,     // 유니온 기본정보
-  unionRaid: true,      // 유니온 레이드
+// 한국어 키워드 → 필드 매핑
+const FIELD_MAP = {
+  "프로필":   "profile",
+  "싱크로":   "synchroLevel",
+  "전투력":   "squadPower",
+  "타워":     "tower",
+  "캠페인":   "campaign",
+  "작전인원": "nikkes",
+  "코스튬":   "costumes",
+  "오버클럭": "overclock",
+  "니케":     "topNikkes",
+  "미션":     "missions",
+  "보관함":   "storage",
+  "유니온":   "unionInfo",
+  "레이드":   "unionRaid",
 };
+
+// 기본 표시 항목 (Parameter에 항목 미지정 시)
+const DEFAULT_FIELDS = ["profile", "synchroLevel", "squadPower", "tower", "overclock", "unionRaid"];
+
+function parseFields(input) {
+  if (!input) return DEFAULT_FIELDS;
+  if (input === "전체" || input === "all") return Object.values(FIELD_MAP);
+
+  const requested = input.split(",").map(s => s.trim());
+  const fields = [];
+  for (const keyword of requested) {
+    const mapped = FIELD_MAP[keyword];
+    if (mapped) fields.push(mapped);
+  }
+  return fields.length > 0 ? ["profile", ...fields] : DEFAULT_FIELDS;
+}
+
+const ACTIVE_FIELDS = parseFields(fieldInput);
 
 // 상위 니케 표시 개수 (1~5)
 const TOP_NIKKE_COUNT = 5;
@@ -407,58 +437,8 @@ function addUnionInfo(widget, data) {
   }
 }
 
-// ===== Custom 모드 =====
-async function buildCustomWidget(widget, data) {
-  const F = CUSTOM_FIELDS;
-
-  if (F.profile) addHeader(widget, data);
-  widget.addSpacer(4);
-
-  // Basic stats
-  const info = data.userInfo;
-  const customStats = [];
-  if (F.synchroLevel && info["Synchro Level"])
-    customStats.push({ label: "싱크로", value: info["Synchro Level"], color: COLORS.accent });
-  if (F.squadPower && info["Squad Power"])
-    customStats.push({ label: "전투력", value: Number(info["Squad Power"]).toLocaleString(), color: COLORS.gold });
-  if (F.tower && info["Towers"])
-    customStats.push({ label: "타워", value: info["Towers"], color: COLORS.red });
-  if (F.nikkes && info["Nikkes"])
-    customStats.push({ label: "작전인원", value: info["Nikkes"], color: COLORS.green });
-  if (F.overclock && info["Overclock Mode"])
-    customStats.push({ label: "오버클럭", value: info["Overclock Mode"], color: COLORS.purple });
-  if (F.costumes && info["Costumes"])
-    customStats.push({ label: "코스튬", value: info["Costumes"], color: COLORS.white });
-
-  if (customStats.length > 0) addStatRow(widget, customStats);
-
-  if (F.campaign) {
-    const camp = [];
-    if (info["Campaign(NORMAL)"]) camp.push(`N:${info["Campaign(NORMAL)"]}`);
-    if (info["Campaign(HARD)"]) camp.push(`H:${info["Campaign(HARD)"]}`);
-    if (camp.length > 0) {
-      widget.addSpacer(2);
-      const c = widget.addText(`캠페인 ${camp.join(" | ")}`);
-      c.font = Font.systemFont(9);
-      c.textColor = new Color(COLORS.gray);
-    }
-  }
-
-  if (F.storage && data.dailyMission?.storageCapacity) {
-    const s = widget.addText(`보관함 ${data.dailyMission.storageCapacity}`);
-    s.font = Font.systemFont(9);
-    s.textColor = new Color(COLORS.gray);
-  }
-
-  if (F.topNikkes) await addTopNikkes(widget, data);
-  if (F.missions) addMissions(widget, data);
-  if (F.unionInfo) addUnionInfo(widget, data);
-  if (F.unionRaid) addUnionRaid(widget, data);
-}
-
 // ===== 메인 위젯 빌드 =====
 async function buildWidget(data) {
-  const widgetSize = config.widgetFamily || "medium";
   const w = new ListWidget();
   w.backgroundColor = new Color(COLORS.bg);
   w.setPadding(10, 12, 10, 12);
@@ -473,42 +453,61 @@ async function buildWidget(data) {
     return w;
   }
 
-  const mode = WIDGET_MODE;
+  const F = new Set(ACTIVE_FIELDS);
 
-  if (mode === "custom") {
-    await buildCustomWidget(w, data);
-    return w;
-  }
-
-  // Header (always shown)
-  addHeader(w, data);
+  // Header (profile 포함 시)
+  if (F.has("profile")) addHeader(w, data);
   w.addSpacer(4);
 
-  if (mode === "basic" || mode === "both") {
-    addBasicInfo(w, data);
+  // 기본 스탯 행
+  const info = data.userInfo;
+  const stats = [];
+  if (F.has("synchroLevel") && info["Synchro Level"])
+    stats.push({ label: "싱크로", value: info["Synchro Level"], color: COLORS.accent });
+  if (F.has("squadPower") && info["Squad Power"])
+    stats.push({ label: "전투력", value: Number(info["Squad Power"]).toLocaleString(), color: COLORS.gold });
+  if (F.has("tower") && info["Towers"])
+    stats.push({ label: "타워", value: info["Towers"], color: COLORS.red });
+  if (F.has("nikkes") && info["Nikkes"])
+    stats.push({ label: "작전인원", value: info["Nikkes"], color: COLORS.green });
+  if (F.has("overclock") && info["Overclock Mode"])
+    stats.push({ label: "오버클럭", value: info["Overclock Mode"], color: COLORS.purple });
+  if (F.has("costumes") && info["Costumes"])
+    stats.push({ label: "코스튬", value: info["Costumes"], color: COLORS.white });
 
-    if (widgetSize === "large") {
-      await addTopNikkes(w, data);
-      addMissions(w, data);
+  if (stats.length > 0) addStatRow(w, stats);
+
+  // 캠페인
+  if (F.has("campaign")) {
+    const camp = [];
+    if (info["Campaign(NORMAL)"]) camp.push(`N:${info["Campaign(NORMAL)"]}`);
+    if (info["Campaign(HARD)"]) camp.push(`H:${info["Campaign(HARD)"]}`);
+    if (camp.length > 0) {
+      w.addSpacer(2);
+      const c = w.addText(`캠페인 ${camp.join(" | ")}`);
+      c.font = Font.systemFont(9);
+      c.textColor = new Color(COLORS.gray);
     }
   }
 
-  if (mode === "raid" || mode === "both") {
-    if (mode === "both") {
-      w.addSpacer(4);
-      addDivider(w);
-    }
-    addUnionRaid(w, data);
+  // 보관함
+  if (F.has("storage") && data.dailyMission?.storageCapacity) {
+    const s = w.addText(`보관함 ${data.dailyMission.storageCapacity}`);
+    s.font = Font.systemFont(9);
+    s.textColor = new Color(COLORS.gray);
   }
 
-  if (mode === "nikkes") {
-    await addTopNikkes(w, data);
-  }
+  // 상위 니케
+  if (F.has("topNikkes")) await addTopNikkes(w, data);
 
-  // Union footer (for large widget or both mode)
-  if (widgetSize === "large" || mode === "both") {
-    addUnionInfo(w, data);
-  }
+  // 미션
+  if (F.has("missions")) addMissions(w, data);
+
+  // 유니온 정보
+  if (F.has("unionInfo")) addUnionInfo(w, data);
+
+  // 유니온 레이드
+  if (F.has("unionRaid")) addUnionRaid(w, data);
 
   return w;
 }

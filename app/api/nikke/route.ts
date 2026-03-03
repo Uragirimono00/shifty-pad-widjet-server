@@ -8,6 +8,10 @@ export const maxDuration = 60;
 let cachedCookies: Array<{ name: string; value: string; domain: string; path: string }> = [];
 let cookieExpiry = 0;
 
+// In-memory data cache: openid → { data, expiry }
+const DATA_CACHE_TTL = 10 * 60 * 1000; // 10분
+const dataCache = new Map<string, { data: unknown; expiry: number }>();
+
 function encodeOpenId(openId: string): string {
   const raw = `29080-${openId}`;
   return Buffer.from(raw).toString("base64");
@@ -388,6 +392,12 @@ export async function GET(request: NextRequest) {
     }, { status: 401 });
   }
 
+  // 캐싱된 데이터가 있으면 바로 반환
+  const cached = dataCache.get(openId);
+  if (cached && Date.now() < cached.expiry) {
+    return NextResponse.json({ success: true, openId, data: cached.data, cached: true });
+  }
+
   let browser: Browser | undefined;
   try {
     browser = await getBrowser();
@@ -434,6 +444,11 @@ export async function GET(request: NextRequest) {
 
     // Now scrape the data
     const data = await scrapeUserData(page, openId);
+
+    // 캐시에 저장 (10분)
+    if (data && !("error" in data)) {
+      dataCache.set(openId, { data, expiry: Date.now() + DATA_CACHE_TTL });
+    }
 
     return NextResponse.json({ success: true, openId, data });
   } catch (error) {
