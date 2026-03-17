@@ -3,6 +3,16 @@
     "app/api/nikke/route.ts": {
       "memory": 1024,
       "maxDuration": 60
+    },
+    "app/api/cron/route.ts": {
+      "memory": 1024,
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "* * * * *"
+    }
+  ]
 }
